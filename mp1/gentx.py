@@ -13,7 +13,7 @@ DEP_PROB = 0.1
 
 # probability that a transfer tries to empty out the balance
 # recommend leaving this at 0 until you want to test illegal transaction detection
-ILLEGAL_TRANSFER_PROB = 0.0
+ILLEGAL_TRANSFER_PROB = 0.1
 
 def random_account(): 
     return ''.join(random.choice(ascii_lowercase) for _ in range(ACCOUNT_LEN))

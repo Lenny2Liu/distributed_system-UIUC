@@ -1,0 +1,9 @@
+8
+node1 localhost 1111
+node2 localhost 3222
+node3 localhost 4424
+node4 localhost 5227
+node5 localhost 2344
+node6 localhost 6345
+node7 localhost 7432
+node8 localhost 8912

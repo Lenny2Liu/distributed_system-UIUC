@@ -272,7 +272,7 @@ func handle_balance(types bool, acct1 string, acct2 string, money int) {
 				return acct_list[i].acct_name < acct_list[j].acct_name
 			})
 		} else {
-			person1.acct_bala = money
+			person1.acct_bala += money
 		}
 	}
 	//print the balance of each accts
@@ -538,4 +538,3 @@ func check_account(account_1 string, account_2 string) (account, account) {
 	some_tx.Unlock()
 	return new_acc_1, new_acc_2
 }
-

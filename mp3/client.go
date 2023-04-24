@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+var (
+	recieveOK bool
+)
+
 func parse_args(config string) (string, string, string) {
 	// Parse the config file
 	// Return the client ip, port, and servername
@@ -20,7 +24,7 @@ func parse_args(config string) (string, string, string) {
 	}
 	defer file.Close()
 	// Seed the random number generator with the current time
-
+	// input e.g.: server name, ip, port
 	rand.Seed(time.Now().UnixNano())
 	randserver := rand.Intn(5) + 1
 	scanner := bufio.NewScanner(file)
@@ -28,6 +32,7 @@ func parse_args(config string) (string, string, string) {
 		if i == randserver-1 {
 			scanner.Scan()
 			info := strings.Split(scanner.Text(), " ")
+			//return server ip, port, servername
 			return info[1], info[2], info[0]
 		} else {
 			scanner.Scan()
@@ -39,17 +44,23 @@ func parse_args(config string) (string, string, string) {
 
 func handleClient(conn net.Conn) {
 	// Continuously receive messages from the server
+	reader := bufio.NewReader(conn)
 	for {
 		// Read the message from the server
-		message, err := bufio.NewReader(conn).ReadString('\n')
+		message, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println("Error: cannot read from server")
 			os.Exit(1)
 		}
 		// Print the message from the server
+		fmt.Println("recieve check", message)
+		if message != ""{
+			recieveOK = true
+		}
 		fmt.Fprintf(os.Stdout, message)
 		// Exit client if the message is "COMMIT OK" or "ABORTED"
-		if message == "COMMIT OK\n" || message == "ABORTED\n" {
+		if message == "COMMIT OK\n" || message == "ABORTED\n" || message == "NOT FOUND, ABORTED\n"{
+			// fmt.Fprintf(os.Stdout, message)
 			os.Exit(0)
 		}
 	}
@@ -100,10 +111,17 @@ func main() {
 			os.Exit(1)
 		}
 		// Send the command to the server
+		fmt.Println("sending check", cmd)
 		_, connerr := fmt.Fprintf(conn, cmd)
 		if connerr != nil {
 			fmt.Println("Error: cannot send command to server")
 			os.Exit(1)
+		}
+		for {
+			if recieveOK {
+				recieveOK = false
+				break
+			}
 		}
 	}
 }

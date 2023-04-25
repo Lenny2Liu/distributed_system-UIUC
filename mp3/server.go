@@ -307,7 +307,7 @@ func commitok_handler(clientaddr string) {
 	client := clients[clientaddr]
 	client.tx.Lock()
 	client.commit_num++
-	fmt.Println(client.commit_num, len(client.servertotalk) )
+	fmt.Println(client.commit_num, len(client.servertotalk))
 	if client.commit_num >= len(client.servertotalk) {
 		// tell the client it's commit ok
 		fmt.Fprintf(client.conn, "COMMIT OK\n")
@@ -377,7 +377,7 @@ func applychange_from_server(cmd []string) {
 		nonclient.tx.Unlock()
 		// not found
 
-		fmt.Fprintf(conn, "NOTFOUND "+clientaddr)
+		fmt.Fprintf(conn, "NOTFOUND "+clientaddr+"\n")
 		// abort_trans_from_server(clientaddr)
 	} else {
 		myserver.acc_list_tx.RUnlock()
@@ -391,6 +391,25 @@ func applychange_from_server(cmd []string) {
 	// potential deadlock
 	for {
 		fmt.Println("waiting for lock")
+		// myserver.acc_list[sev_acc[1]].rwtx.Lock()
+		if _, ok := myserver.acc_list[sev_acc[1]]; !ok && cmd[0] == "WITHDRAWING" {
+			// myserver.acc_list[sev_acc[1]].rwtx.Unlock()
+			fmt.Fprintf(conn, "NOTFOUND "+clientaddr+"\n")
+			break
+		}
+		if _, ok := myserver.acc_list[sev_acc[1]]; !ok && cmd[0] == "DEPOSITING" {
+			// myserver.acc_list[sev_acc[1]].rwtx.Unlock()
+			account := Account{0, sync.RWMutex{}, "", 0, true, false, sev_acc[1]}
+			myserver.acc_list_tx.Lock()
+			myserver.acc_list[sev_acc[1]] = &account
+			myserver.acc_list_tx.Unlock()
+			account.rwtx.Lock()
+			account.access = clientaddr
+			account.rwtx.Unlock()
+			nonclient.created_accts[sev_acc[1]] = &account
+			// nonclient.tx.Unlock()
+			break
+		}
 		myserver.acc_list[sev_acc[1]].rwtx.Lock()
 		if myserver.acc_list[sev_acc[1]].access == "" || myserver.acc_list[sev_acc[1]].access == clientaddr {
 			myserver.acc_list[sev_acc[1]].access = clientaddr
@@ -546,7 +565,7 @@ func askbalance_from_server(cmd []string) {
 	if _, ok := myserver.acc_list[accname]; !ok {
 		fmt.Println("no such account")
 		myserver.acc_list_tx.RUnlock()
-		fmt.Fprintf(conn, "NOTFOUND "+cmd[2] + "\n")
+		fmt.Fprintf(conn, "NOTFOUND "+cmd[2]+"\n")
 	} else {
 		// BALANCERESULT A.abc=100 clientaddr
 
@@ -691,8 +710,9 @@ func abort_trans_from_client(clientaddr string) {
 		fmt.Fprintf(clients[clientaddr].conn, msg)
 	}
 	for _, l := range clients[clientaddr].servertotalk {
-		msg := "ABORTING " + clientaddr
+		msg := "ABORTING " + clientaddr + "\n"
 		fmt.Fprintf(connMap[l], msg)
+		fmt.Fprintf(clients[clientaddr].conn, "ABORTED\n")
 	}
 	// client.tx.Unlock()
 }

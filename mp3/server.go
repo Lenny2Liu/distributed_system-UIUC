@@ -117,45 +117,47 @@ func handleServer(conn net.Conn) {
 		// 1. other server is aborting its own client's transaction
 		// 2. other server abort transaction of a client in this server
 		if msglist[0] == "ABORTING" {
-			abort_trans_from_server(msglist[1])
+			go abort_trans_from_server(msglist[1])
 		} else if msglist[0] == "COMMITING" {
 			//recieve commit command from other server, reply COMMIT OK to the server who assigned this command
-			commit_trans_from_server(msglist[1], msglist[2])
+			go commit_trans_from_server(msglist[1], msglist[2])
 		} else if msglist[0] == "DEADLOCK" {
 			// receiving DEADLOCK clientaddr1-clientaddr2-clientaddr3-...
 			deadlock_detector(msglist[1])
 		} else if msglist[0] == "DEPOSITING" || msglist[0] == "WITHDRAWING" {
-			fmt.Println("now I am here you bitch")
-			applychange_from_server(msglist)
+			// fmt.Println("now I am here you bitch")
+			go applychange_from_server(msglist)
 		} else if msglist[0] == "COMMITOK" {
 			// commit ok handler to record whether received all commitok
-			commitok_handler(msglist[1])
+			go commitok_handler(msglist[1])
 		} else if msglist[0] == "APPLYOK" {
 			// apply ok when withdraw's balance is legal
-			fmt.Println("receiving apply ok")
-			applyok_handler(msglist[1])
+			fmt.Println("receiving apply ok", msg)
+			go applyok_handler(msglist[1])
 		} else if msglist[0] == "NOTFOUND" {
 			// not found when withdraw's balance is illegal
 			// msglist: NOTFOUND clientaddr
 
-			notfound_handler(msglist[1])
+			go notfound_handler(msglist[1])
 		} else if msglist[0] == "BALANCING" {
 			// msglist: BALANCING A.abc clientaddr
-			askbalance_from_server(msglist)
+			go askbalance_from_server(msglist)
 		} else if msglist[0] == "BALANCERESULT" {
 			// msglist: BALANCERESULT A.abc=100 clientaddr
-			addr := strings.Split(msglist[2], "\n")[0]
-			fmt.Println("address : ", addr)
-			if _, ok := clients[addr]; ok {
-				new_client := clients[addr]
-				new_client.tx.Lock()
-				fmt.Println(new_client.conn.RemoteAddr())
-				fmt.Fprintf(new_client.conn, msglist[1]+"\n")
-				new_client.tx.Unlock()
-			} else {
-				fmt.Println("Error: cannot find client 147")
-				os.Exit(1)
-			}
+			go func() {
+				addr := strings.Split(msglist[2], "\n")[0]
+				fmt.Println("address : ", addr)
+				if _, ok := clients[addr]; ok {
+					new_client := clients[addr]
+					new_client.tx.Lock()
+					fmt.Println(new_client.conn.RemoteAddr())
+					fmt.Fprintf(new_client.conn, msglist[1]+"\n")
+					new_client.tx.Unlock()
+				} else {
+					fmt.Println("Error: cannot find client 147")
+					os.Exit(1)
+				}
+			}()
 		}
 	}
 }
@@ -291,9 +293,18 @@ func commit_trans_from_server(clientaddr string, name string) {
 			msg = "ABORTING " + clientaddr + "\n"
 		}
 		// clear the access clientaddr
+		acct.rwtx.RLock()
+		if acct.access != clientaddr{
+			fmt.Println(acct.access, clientaddr)
+			acct.rwtx.RUnlock()
+			break
+		}
+		acct.rwtx.RUnlock()
 		acct.rwtx.Lock()
+		fmt.Println(acct.access)
 		acct.access = ""
 		acct.rwtx.Unlock()
+		myserver.acc_list[acct_name] = acct
 	}
 	ser := strings.Split(name, "\n")[0]
 	conn := connMap[serverMap[ser]]
@@ -390,13 +401,18 @@ func applychange_from_server(cmd []string) {
 
 	// potential deadlock
 	for {
-		fmt.Println("waiting for lock")
+		// fmt.Println("waiting for lock")
 		// myserver.acc_list[sev_acc[1]].rwtx.Lock()
 		if _, ok := myserver.acc_list[sev_acc[1]]; !ok && cmd[0] == "WITHDRAWING" {
 			// myserver.acc_list[sev_acc[1]].rwtx.Unlock()
 			fmt.Fprintf(conn, "NOTFOUND "+clientaddr+"\n")
 			break
 		}
+		// if _, ok := myserver.acc_list[sev_acc[1]]; !ok && cmd[0] == "BALANCING" {
+		// 	// myserver.acc_list[sev_acc[1]].rwtx.Unlock()
+		// 	fmt.Fprintf(conn, "NOTFOUND "+clientaddr+"\n")
+		// 	break
+		// }
 		if _, ok := myserver.acc_list[sev_acc[1]]; !ok && cmd[0] == "DEPOSITING" {
 			// myserver.acc_list[sev_acc[1]].rwtx.Unlock()
 			account := Account{0, sync.RWMutex{}, "", 0, true, false, sev_acc[1]}
@@ -410,8 +426,11 @@ func applychange_from_server(cmd []string) {
 			// nonclient.tx.Unlock()
 			break
 		}
+
 		myserver.acc_list[sev_acc[1]].rwtx.Lock()
+		// fmt.Println(myserver.acc_list[sev_acc[1]].access, clientaddr)
 		if myserver.acc_list[sev_acc[1]].access == "" || myserver.acc_list[sev_acc[1]].access == clientaddr {
+			// fmt.Println(myserver.acc_list[sev_acc[1]].access, clientaddr)
 			myserver.acc_list[sev_acc[1]].access = clientaddr
 			myserver.acc_list[sev_acc[1]].rwtx.Unlock()
 			break
@@ -427,8 +446,9 @@ func applychange_from_server(cmd []string) {
 	new_trans := Transaction{acc, amount, cmd[0]}
 	tmp_nonclient.trans_list = append(tmp_nonclient.trans_list, &new_trans)
 	nonclients[clientaddr] = tmp_nonclient
+	// fmt.Println()
 	fmt.Fprintf(conn, "APPLYOK "+clientaddr+"\n")
-	fmt.Println("APPLYOK ", conn.RemoteAddr(), conn.LocalAddr())
+	fmt.Println("APPLYOK ", clientaddr, conn.RemoteAddr(), conn.LocalAddr())
 
 }
 
@@ -475,15 +495,15 @@ func applychanges(cmd string, clientaddr string) {
 		}
 
 		for {
-			myserver.acc_list[sev_acc[1]].rwtx.RLock()
+			myserver.acc_list[sev_acc[1]].rwtx.Lock()
 			//fmt.Println("dead in for loop", myserver.acc_list[sev_acc[1]].access)
 			if myserver.acc_list[sev_acc[1]].access == "" || myserver.acc_list[sev_acc[1]].access == clientaddr {
 
 				myserver.acc_list[sev_acc[1]].access = clientaddr
-				myserver.acc_list[sev_acc[1]].rwtx.RUnlock()
+				myserver.acc_list[sev_acc[1]].rwtx.Unlock()
 				break
 			}
-			myserver.acc_list[sev_acc[1]].rwtx.RUnlock()
+			myserver.acc_list[sev_acc[1]].rwtx.Unlock()
 		}
 
 		myserver.acc_list_tx.Lock()
@@ -499,7 +519,7 @@ func applychanges(cmd string, clientaddr string) {
 		new_trans := Transaction{acc, amount, cmds[0]}
 		client.trans_list = append(client.trans_list, &new_trans)
 		clients[clientaddr] = client
-		// fmt.Println(client.trans_list)
+		fmt.Println(client.trans_list)
 		myserver.acc_list_tx.Unlock()
 		fmt.Println("OK sent")
 		fmt.Fprintf(clients[clientaddr].conn, "OK\n")
@@ -534,7 +554,7 @@ func applychanges(cmd string, clientaddr string) {
 		fmt.Println(conn.RemoteAddr(), conn.LocalAddr())
 		_, err := fmt.Fprintf(conn, new_cmd)
 		if err != nil {
-			fmt.Println("Error: cannot send to server 471")
+			fmt.Println("Error: cannot send to server 537")
 			os.Exit(1)
 		}
 		fmt.Println("sent to server")
@@ -548,6 +568,7 @@ func askbalance_from_server(cmd []string) {
 	accname := sev_acc[1]
 	servername := strings.Split(cmd[3], "\n")[0]
 	conn := connMap[serverMap[servername]]
+	client_addr := cmd[2]
 	if sev_acc[0] != myname {
 		fmt.Println("Error: wrong query sent to this server 428")
 		os.Exit(1)
@@ -561,18 +582,50 @@ func askbalance_from_server(cmd []string) {
 	// 	return
 	// }
 	fmt.Println("accname", accname, conn.RemoteAddr(), myserver.acc_list[accname])
-
-	if _, ok := myserver.acc_list[accname]; !ok {
-		fmt.Println("no such account")
-		myserver.acc_list_tx.RUnlock()
-		fmt.Fprintf(conn, "NOTFOUND "+cmd[2]+"\n")
-	} else {
-		// BALANCERESULT A.abc=100 clientaddr
-
-		fmt.Fprintf(conn, "BALANCERESULT "+cmd[1]+"="+strconv.Itoa(myserver.acc_list[accname].balance)+" "+cmd[2]+"\n")
-		myserver.acc_list_tx.RUnlock()
-		fmt.Println("sent result to server", conn.RemoteAddr())
+	// lock until
+	for {
+		if _, ok := myserver.acc_list[accname]; !ok {
+			fmt.Println("no such account")
+			myserver.acc_list_tx.RUnlock()
+			fmt.Fprintf(conn, "NOTFOUND "+cmd[2]+"\n")
+			return
+		} else {
+			myserver.acc_list[sev_acc[1]].rwtx.Lock()
+			// fmt.Println(myserver.acc_list[sev_acc[1]].access, client_addr)
+			if myserver.acc_list[sev_acc[1]].access == "" || myserver.acc_list[sev_acc[1]].access == client_addr {
+				fmt.Println(myserver.acc_list[sev_acc[1]].access, client_addr)
+				myserver.acc_list[sev_acc[1]].access = client_addr
+				myserver.acc_list[sev_acc[1]].rwtx.Unlock()
+				break
+			}
+			myserver.acc_list[sev_acc[1]].rwtx.Unlock()
+		}
 	}
+	// BALANCERESULT A.abc=100 clientaddr
+	if _, ok := clients[client_addr]; ok {
+		client := clients[client_addr]
+		client.tx.Lock()
+		// client := clients[clientaddr]
+		myserver.acc_list[sev_acc[1]].rwtx.RLock()
+		accnt := myserver.acc_list[accname]
+		myserver.acc_list[sev_acc[1]].rwtx.RUnlock()
+		client.trans_list = append(client.trans_list, &Transaction{accnt, 0, ""})
+		clients[client_addr] = client
+		client.tx.Unlock()
+	} else {
+		nonclient := nonclients[client_addr]
+		nonclient.tx.Lock()
+		myserver.acc_list[sev_acc[1]].rwtx.RLock()
+		accnt := myserver.acc_list[accname]
+		myserver.acc_list[sev_acc[1]].rwtx.RUnlock()
+		nonclient.trans_list = append(nonclient.trans_list, &Transaction{accnt, 0, ""})
+		nonclient.tx.Unlock()
+		nonclients[client_addr] = nonclient
+	}
+	fmt.Fprintf(conn, "BALANCERESULT "+cmd[1]+"="+strconv.Itoa(myserver.acc_list[accname].balance)+" "+cmd[2]+"\n")
+	myserver.acc_list_tx.RUnlock()
+	fmt.Println("sent result to server", conn.RemoteAddr())
+
 }
 
 func ask_balance(cmd string, clientaddr string) {
@@ -582,20 +635,35 @@ func ask_balance(cmd string, clientaddr string) {
 	accname := strings.Split(sev_acc[1], "\n")[0]
 	fmt.Println(accname)
 	if sev_acc[0] == myname {
-		myserver.acc_list_tx.RLock()
-		// fmt.Println(myserver.acc_list[sev_acc[1]], sev_acc[1])
-		if _, ok := myserver.acc_list[accname]; !ok {
-			fmt.Println("NOT FOUND")
-			myserver.acc_list_tx.RUnlock()
-			fmt.Fprintf(clients[clientaddr].conn, "NOT FOUND, ")
-			abort_trans_from_client(clientaddr)
-		} else {
+		for {
+			//myserver.acc_list_tx.RLock()
+			// fmt.Println(myserver.acc_list[sev_acc[1]], sev_acc[1])
+			if _, ok := myserver.acc_list[accname]; !ok {
+				fmt.Println("NOT FOUND")
+				//myserver.acc_list_tx.RUnlock()
+				fmt.Fprintf(clients[clientaddr].conn, "NOT FOUND, ")
+				abort_trans_from_client(clientaddr)
+				return
+			} else {
 			// use read lock here
-
-			fmt.Println(myserver.acc_list[accname].balance)
-			fmt.Fprintf(clients[clientaddr].conn, serveracc+"="+strconv.Itoa(myserver.acc_list[accname].balance)+"\n")
-			myserver.acc_list_tx.RUnlock()
+				myserver.acc_list[accname].rwtx.Lock()
+				fmt.Println(myserver.acc_list[accname].access, clientaddr)
+				if myserver.acc_list[accname].access == "" || myserver.acc_list[accname].access == clientaddr {
+					fmt.Println(myserver.acc_list[accname].access, clientaddr)
+					myserver.acc_list[accname].access = clientaddr
+					myserver.acc_list[accname].rwtx.Unlock()
+					break
+				}
+				myserver.acc_list[accname].rwtx.Unlock()
+			}
 		}
+		client := clients[clientaddr]
+		accnt := myserver.acc_list[accname]
+		client.trans_list = append(client.trans_list, &Transaction{accnt, 0, ""})
+		clients[clientaddr] = client
+		fmt.Println(myserver.acc_list[accname].balance)
+		fmt.Fprintf(clients[clientaddr].conn, serveracc+"="+strconv.Itoa(myserver.acc_list[accname].balance)+"\n")
+		//myserver.acc_list_tx.RUnlock()
 		return
 	}
 	//make it distinctable with command from clients
@@ -610,6 +678,22 @@ func ask_balance(cmd string, clientaddr string) {
 		// client := clients[clientaddr]
 		// client.servertotalk = append(client.servertotalk, IP)
 		// clients[clientaddr] = client
+		// client := clients[clientaddr]
+		// accnt := myserver.acc_list[accname]
+		// client.trans_list = append(client.trans_list, &Transaction{accnt, 0, ""})
+		// clients[clientaddr] = client
+		found := false
+		IP := serverMap[sev_acc[0]]
+		client := clients[clientaddr]
+		for _, v := range client.servertotalk {
+			if v == IP {
+				found = true
+			}
+		}
+		if !found {
+			client.servertotalk = append(client.servertotalk, IP)
+			clients[clientaddr] = client
+		}
 		conn := connMap[serverMap[sev_acc[0]]]
 		fmt.Fprintf(conn, new_cmd)
 	}
@@ -621,6 +705,8 @@ func rollback_other(clientaddr string) {
 	myserver.acc_list_tx.RLock()
 	Acctlist := myserver.acc_list
 	myserver.acc_list_tx.RUnlock()
+	fmt.Println(len(nonclients[clientaddr].trans_list))
+	fmt.Println(nonclients[clientaddr].trans_list[0].operation, nonclients[clientaddr].trans_list[0].amount)
 	for _, trans := range nonclients[clientaddr].trans_list {
 		// ACCOUNT is created by client
 		Acc := trans.account
@@ -634,13 +720,13 @@ func rollback_other(clientaddr string) {
 				myserver.acc_list_tx.Unlock()
 			} else {
 				// ACCOUNT is not created by client
-				if trans.operation == "DEPOSIT" {
+				if trans.operation == "DEPOSITING" {
 					Acctlist[Aname].rwtx.Lock()
 					Acctlist[Aname].balance -= trans.amount
 					Acctlist[Aname].rwtx.Unlock()
-				} else if trans.operation == "WITHDRAW" {
+				} else if trans.operation == "WITHDRAWING" {
 					Acctlist[Aname].rwtx.Lock()
-					Acctlist[Aname].balance += trans.amount
+					Acctlist[Aname].balance -= trans.amount
 					Acctlist[Aname].rwtx.Unlock()
 				}
 				Acctlist[Aname].rwtx.Lock()
@@ -684,7 +770,7 @@ func self_roll_back(clientaddr string) {
 					Acctlist[Aname].rwtx.Unlock()
 				} else if trans.operation == "WITHDRAW" {
 					Acctlist[Aname].rwtx.Lock()
-					Acctlist[Aname].balance += trans.amount
+					Acctlist[Aname].balance -= trans.amount
 					Acctlist[Aname].rwtx.Unlock()
 				}
 				// clear the account's access client
@@ -722,35 +808,67 @@ func commit_transaction(clientaddr string) {
 	// sending COMMITING msg to servers
 	client := clients[clientaddr]
 	// client.tx.Lock()
-	fmt.Println(client.servertotalk)
-	if len(client.servertotalk) == 0 {
-		msg := "COMMIT OK\n"
-		fmt.Fprintf(client.conn, msg)
-	}
-	for _, l := range clients[clientaddr].servertotalk {
-		fmt.Println("sending COMMITING msg to server", l)
-		msg := "COMMITING " + clientaddr + " " + myname + "\n"
-		fmt.Fprintf(connMap[l], msg)
-	}
-	// unlock myserver's account lock from clientaddr
-	fmt.Println(clients[clientaddr].trans_list)
-	if len(clients[clientaddr].trans_list) != 0 {
-		for _, trans := range clients[clientaddr].trans_list {
-			Aname := trans.account.name
-			fmt.Println("what the fuck man", Aname)
-			if _, ok := myserver.acc_list[Aname]; ok {
-				myserver.acc_list[Aname].rwtx.Lock()
-				myserver.acc_list[Aname].access = ""
-				myserver.acc_list[Aname].rwtx.Unlock()
-				if myserver.acc_list[Aname].balance < 0 {
-					abort_trans_from_client(clientaddr)
-					return
-				}
-			}
+	// fmt.Println(client.servertotalk)
+	if len(client.servertotalk) != 0 {
+		// msg := "COMMIT OK\n"
+		// fmt.Fprintf(client.conn, msg)
+		for _, l := range clients[clientaddr].servertotalk {
+			fmt.Println("sending COMMITING msg to server", l)
+			msg := "COMMITING " + clientaddr + " " + myname + "\n"
+			fmt.Fprintf(connMap[l], msg)
 		}
 	}
 
+	// unlock myserver's account lock from clientaddr
+	//fmt.Println(len(clients[clientaddr].trans_list))
+	if len(clients[clientaddr].trans_list) != 0 {
+		if len(client.servertotalk) != 0{
+			for _, trans := range clients[clientaddr].trans_list {
+			// fmt.Println(*trans)
+				Aname := trans.account.name
+			// fmt.Println("what the fuck man", Aname)
+				if _, ok := myserver.acc_list[Aname]; ok {
+					myserver.acc_list[Aname].rwtx.Lock()
+					myserver.acc_list[Aname].access = ""
+					if myserver.acc_list[Aname].balance < 0 {
+						fmt.Println(myserver.acc_list[Aname].balance)
+						myserver.acc_list[Aname].rwtx.Unlock()
+						abort_trans_from_client(clientaddr)
+						return
+					}
+					myserver.acc_list[Aname].rwtx.Unlock()
+				}
+			}
+		}
+		if len(client.servertotalk) == 0 {
+			for _, trans := range clients[clientaddr].trans_list {
+				Aname := trans.account.name
+				fmt.Println("what the fuck man", Aname)
+				if _, ok := myserver.acc_list[Aname]; ok {
+					myserver.acc_list[Aname].rwtx.Lock()
+					myserver.acc_list[Aname].access = ""
+					if myserver.acc_list[Aname].balance < 0 {
+						fmt.Println(myserver.acc_list[Aname].balance)
+						myserver.acc_list[Aname].rwtx.Unlock()
+						abort_trans_from_client(clientaddr)
+						return
+						}
+					myserver.acc_list[Aname].rwtx.Unlock()
+					}
+			}
+			fmt.Fprintf(clients[clientaddr].conn, "COMMIT OK\n")
+			
+			return
+		}
+	}
+	if len(client.servertotalk) == 0 {
+		msg := "COMMIT OK\n"
+		// if _, ok := myserver.acc_list[]
+		fmt.Fprintf(client.conn, msg)
+	}
+
 	client.commit_num++
+	clients[clientaddr] = client
 	// client.tx.Unlock()
 }
 
